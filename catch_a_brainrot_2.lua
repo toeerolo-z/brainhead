@@ -36,6 +36,21 @@ local function getHum()
     return c and c:FindFirstChildOfClass("Humanoid")
 end
 
+local function _safeTP(cf)
+    local char = getChar()
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    if not root then return false end
+    local x, y, z = cf.X, cf.Y, cf.Z
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    params.FilterDescendantsInstances = {char}
+    local hit = workspace:Raycast(Vector3.new(x, y + 60, z), Vector3.new(0, -300, 0), params)
+    local landY = hit and (hit.Position.Y + 4) or (y + 4)
+    root.CFrame = CFrame.new(x, landY, z)
+    root.AssemblyLinearVelocity = Vector3.zero
+    return true
+end
+
 local S = {
     speed=100, infJumpH=50, flySpeed=100, tweenSpeed=100,
     aimbotFOV=45, aimbotSens=1, aimbotX=0, aimbotY=0,
@@ -168,19 +183,42 @@ local _Core = require(game:GetService("ReplicatedStorage").Brainrot.Core)
 local _Checks = require(game:GetService("ReplicatedStorage").Modules.Checks)
 local _Heal = game:GetService("ReplicatedStorage").Brainrot.Center.Center.__server__.Heal
 local _RotChiller = require(game:GetService("ReplicatedStorage").Brainrot.RotChiller.Client)
+local _WorldsClient = require(game:GetService("ReplicatedStorage").Brainrot.Worlds.Client)
+local _SetWorldRemote = game:GetService("ReplicatedStorage").Brainrot.Worlds.Server.SetWorld
 local _ZonePositions = {
-    ["Zone 1"] = CFrame.new(-1620, 20, 1027),
-    ["Zone 2"] = CFrame.new(-1350, 20, 800),
+    ["Zone 1"] = CFrame.new(-1516, 21, 1046),
+    ["Zone 2"] = CFrame.new(-1474, 21, 858),
+    ["Zone 3 (Tundra)"] = CFrame.new(-1580, 32, 66),
+    ["Zone 4 (Tundra)"] = CFrame.new(-1518, 43, -236),
+    ["Zone 5 (Tundra)"] = CFrame.new(-1605, 28, -724),
+}
+local _ZoneWorld = {
+    ["Zone 1"] = 1, ["Zone 2"] = 1,
+    ["Zone 3 (Tundra)"] = 2, ["Zone 4 (Tundra)"] = 2, ["Zone 5 (Tundra)"] = 2,
 }
 getgenv()._ZH_selectedZone = "Zone 1"
 getgenv()._ZH_minFarmLevel = 0
+
+local _WorldSpawn = {
+    [1] = CFrame.new(-1529, 20, 1368),
+    [2] = CFrame.new(-1555.9, 18.61, 328.96),
+}
+
+local function _ensureWorld(targetWorld)
+    if _WorldsClient.CurrentWorld == targetWorld then return true end
+    pcall(function() _WorldsClient.SetWorldUnlocked(targetWorld, true) end)
+    pcall(function() _SetWorldRemote:FireServer(targetWorld) end)
+    pcall(function() _WorldsClient.SetWorld(targetWorld) end)
+    task.wait(2.5)
+    return _WorldsClient.CurrentWorld == targetWorld
+end
 getgenv()._ZH_maxFarmLevel = 999
 
 getgenv()._ZH_autoFarm = false
 getgenv()._ZH_farmStats = {kills=0, status="Idle"}
 
 local _collectSellIDs, _doSell
-local _SellRemote = game:GetService("ReplicatedStorage").Brainrot.VirtualPC.__server__.RequestSell
+local _SellRemote = game:GetService("ReplicatedStorage").Brainrot.Sell.Server.RequestSell
 local _MyRots = require(game:GetService("ReplicatedStorage").Brainrot.Rot.MyRots)
 local _bagRef = require(game:GetService("ReplicatedStorage").Brainrot.Bag.MyBag)
 
@@ -316,13 +354,26 @@ end
 local function _tpToZone()
     local hrp = getHRP()
     if not hrp then return end
+    local zoneName = getgenv()._ZH_selectedZone or "Zone 1"
+    local dest = _ZonePositions[zoneName] or _ZonePositions["Zone 1"]
+    local needWorld = _ZoneWorld[zoneName] or 1
+    if _WorldsClient.CurrentWorld ~= needWorld then
+        _ensureWorld(needWorld)
+        hrp = getHRP()
+        if not hrp then return end
+    end
     local rotObjs = workspace:FindFirstChild("ROT OBJECTS")
     local hasRots = rotObjs and #rotObjs:GetChildren() > 0
-    local dest = _ZonePositions[getgenv()._ZH_selectedZone] or _ZonePositions["Zone 1"]
     if not hasRots or (hrp.Position - dest.Position).Magnitude > 200 then
-        hrp.CFrame = dest
-        hrp.AssemblyLinearVelocity = Vector3.zero
-        task.wait(1.5)
+        for i = 1, 5 do
+            _safeTP(dest)
+            task.wait(0.5)
+            hrp = getHRP()
+            if not hrp then return end
+            local ro = workspace:FindFirstChild("ROT OBJECTS")
+            if ro and #ro:GetChildren() > 0 and (hrp.Position - dest.Position).Magnitude < 200 then break end
+        end
+        task.wait(0.5)
     end
 end
 
@@ -518,6 +569,26 @@ Tog.AutoHeal = GameL:Toggle({ Name="Auto Heal", Default=false,
         end
     end }, "AutoHeal")
 
+getgenv()._ZH_autoClick = false
+Tog.AutoClick = GameL:Toggle({ Name="Auto Click", Default=false,
+    Callback=function(p)
+        getgenv()._ZH_autoClick = p
+        if p then
+            task.spawn(function()
+                while getgenv()._ZH_autoClick do
+                    pcall(function()
+                        local cam = workspace.CurrentCamera
+                        local vp = cam and cam.ViewportSize or Vector2.new(1280, 720)
+                        _vimRef:SendMouseButtonEvent(vp.X/2, vp.Y*0.55, 0, true, game, 1)
+                        task.wait(0.05)
+                        _vimRef:SendMouseButtonEvent(vp.X/2, vp.Y*0.55, 0, false, game, 1)
+                    end)
+                    task.wait(10)
+                end
+            end)
+        end
+    end }, "AutoClick")
+
 local _zoneNames = {}
 for name in pairs(_ZonePositions) do table.insert(_zoneNames, name) end
 table.sort(_zoneNames)
@@ -552,7 +623,7 @@ local function _getBagBalls()
     return balls
 end
 
-Opt.CatchBall = GameR:Dropdown({ Name="Ball (from bag)", Options=_getBagBalls(), Default=1, Multi=false,
+Opt.CatchBall = GameR:Dropdown({ Name="Ball", Options=_getBagBalls(), Default=1, Multi=false,
     Callback=function(v) local sel = type(v) == "table" and next(v) or v; getgenv()._ZH_catchBall = sel end }, "CatchBall")
 GameR:Button({ Name="Refresh Balls", Callback=function()
     pcall(function() Opt.CatchBall:Refresh(_getBagBalls()) end)
@@ -566,13 +637,72 @@ local MiscL = Tabs.Misc:Section({Side="Left", Name="Utilities", Image="star"})
 MiscL:Button({ Name="Heal", Callback=function() pcall(function() _Heal:InvokeServer() end); notify("Healed",2) end })
 MiscL:Button({ Name="Clear Locks", Callback=function() pcall(function() for k in pairs(_Checks.Taken) do _Checks:SetOff(k) end end); notify("Locks cleared",2) end })
 MiscL:Button({ Name="TP to Farm Zone", Callback=function()
-    local hrp = getHRP()
-    local dest = _ZonePositions[getgenv()._ZH_selectedZone] or _ZonePositions["Zone 1"]
-    if hrp then hrp.CFrame = dest; hrp.AssemblyLinearVelocity = Vector3.zero; notify("TP'd to " .. (getgenv()._ZH_selectedZone or "Zone 1"),2) end
+    local zoneName = getgenv()._ZH_selectedZone or "Zone 1"
+    local needWorld = _ZoneWorld[zoneName] or 1
+    if _WorldsClient.CurrentWorld ~= needWorld then
+        _ensureWorld(needWorld)
+        local hrp = getHRP()
+        if hrp and _WorldSpawn[needWorld] then hrp.CFrame = _WorldSpawn[needWorld]; hrp.AssemblyLinearVelocity = Vector3.zero; task.wait(1) end
+    end
+    local dest = _ZonePositions[zoneName] or _ZonePositions["Zone 1"]
+    _safeTP(dest)
+    notify("TP'd to " .. zoneName, 2)
 end })
 
+local _attemptPurchase = game:GetService("ReplicatedStorage").Brainrot.ShopViewer.__server__.AttemptPurchase
+local _shopItems = {"Rot Box", "Silver Box", "Gold Box", "Snow Box", "Snowman Box", "Miner Box", "Frozen Box"}
+getgenv()._ZH_buyItem = "Rot Box"
+
+Opt.BuyItem = MiscL:Dropdown({ Name="Buy Item", Options=_shopItems, Default=1, Multi=false,
+    Callback=function(v) local sel = type(v)=="table" and next(v) or v; getgenv()._ZH_buyItem = sel end }, "BuyItem")
+
+MiscL:Button({ Name="Buy", Callback=function()
+    local item = getgenv()._ZH_buyItem or "Rot Box"
+    local world = _WorldsClient.CurrentWorld
+    local ok, res = pcall(function() return _attemptPurchase:InvokeServer(item, world) end)
+    if ok and res then
+        notify("Bought " .. item, 2)
+    else
+        notify("Can't buy " .. item, 2)
+    end
+end })
+
+MiscL:Button({ Name="Buy x10", Callback=function()
+    local item = getgenv()._ZH_buyItem or "Rot Box"
+    local world = _WorldsClient.CurrentWorld
+    local bought = 0
+    for i = 1, 10 do
+        local ok, res = pcall(function() return _attemptPurchase:InvokeServer(item, world) end)
+        if ok and res then bought = bought + 1 else break end
+        task.wait(0.1)
+    end
+    notify("Bought " .. bought .. "x " .. item, 2)
+end })
+
+getgenv()._ZH_autoBuy = false
+Tog.AutoBuy = MiscL:Toggle({ Name="Auto Buy", Default=false,
+    Callback=function(p)
+        getgenv()._ZH_autoBuy = p
+        if p then
+            task.spawn(function()
+                while getgenv()._ZH_autoBuy do
+                    local item = getgenv()._ZH_buyItem or "Rot Box"
+                    local world = _WorldsClient.CurrentWorld
+                    local ok, res = pcall(function() return _attemptPurchase:InvokeServer(item, world) end)
+                    if not ok or not res then
+                        getgenv()._ZH_autoBuy = false
+                        notify("Auto Buy stopped (can't afford)", 3)
+                        pcall(function() Tog.AutoBuy:Set(false) end)
+                        break
+                    end
+                    task.wait(0.3)
+                end
+            end)
+        end
+    end }, "AutoBuy")
+
 local MiscR = Tabs.Misc:Section({Side="Right", Name="Auto Sell", Image="sparkles"})
-local _rarityNames = {"Common", "Uncommon", "Rare", "Epic", "Insane", "Exclusive"}
+local _rarityNames = {"Common", "Uncommon", "Rare", "Epic", "Insane"}
 
 getgenv()._ZH_sellRarities = {}
 getgenv()._ZH_sellMaxLevel = 0
@@ -580,25 +710,26 @@ getgenv()._ZH_sellMaxLevel = 0
 Opt.SellRarities = MiscR:Dropdown({ Name="Sell Rarities", Options=_rarityNames, Default={}, Multi=true,
     Callback=function(v) getgenv()._ZH_sellRarities = v end }, "SellRarities")
 
-Opt.SellMaxLevel = MiscR:Slider({ Name="Only Sell Level ≤ (0=any)", Default=0, Minimum=0, Maximum=100, Precision=0,
+Opt.SellMaxLevel = MiscR:Slider({ Name="Max Sell Level", Default=0, Minimum=0, Maximum=100, Precision=0,
     Callback=function(v) getgenv()._ZH_sellMaxLevel = v end }, "SellMaxLevel")
 
-MiscR:Label({ Text="Sells PC rots only (not team)" })
+MiscR:Label({ Text="Sells team + PC rots" })
 
 _collectSellIDs = function()
     local sellSet = getgenv()._ZH_sellRarities or {}
     if not next(sellSet) then return {} end
     local maxLvl = getgenv()._ZH_sellMaxLevel or 0
     local toSell = {}
-    for _, rot in pairs(_MyRots.PC) do
-        if type(rot) == "table" and rot.UniqueID then
-            local sp = _Core.Species[rot.Name]
-            local rarity = sp and sp.Rarity and sp.Rarity.Name or "?"
-            if sellSet[rarity] and (maxLvl == 0 or (rot.Level or 0) <= maxLvl) then
-                table.insert(toSell, rot.UniqueID)
-            end
-        end
+    local function consider(rot)
+        if type(rot) ~= "table" or not rot.UniqueID then return end
+        local sp = _Core.Species[rot.Name]
+        local rarity = sp and sp.Rarity and sp.Rarity.Name or "?"
+        if not sellSet[rarity] then return end
+        if maxLvl > 0 and (rot.Level or 0) > maxLvl then return end
+        table.insert(toSell, rot.UniqueID)
     end
+    for _, rot in pairs(_MyRots.PC) do consider(rot) end
+    for _, rot in pairs(_MyRots.Team) do consider(rot) end
     return toSell
 end
 
@@ -607,10 +738,9 @@ _doSell = function()
     if #toSell == 0 then notify("Nothing matches filters",2); return end
     local ok, res = pcall(function() return _SellRemote:InvokeServer(toSell) end)
     if ok and res and res.Type == "Success" then
-        pcall(function() _MyRots.DeleteRots(toSell) end)
         notify("Sold " .. #toSell .. " rots",3)
     else
-        notify("Sell failed: " .. tostring(res and res.Message or "unknown"),3)
+        notify("Sell failed",3)
     end
 end
 
@@ -620,112 +750,181 @@ getgenv()._ZH_autoSell = false
 Tog.AutoSell = MiscR:Toggle({ Name="Auto Sell After Catch", Default=false,
     Callback=function(p) getgenv()._ZH_autoSell = p end }, "AutoSell")
 
-local MiscR2 = Tabs.Misc:Section({Side="Right", Name="Chests", Image="leaf"})
-local _ChestsV2Client = require(game:GetService("ReplicatedStorage").Brainrot.ChestsV2.Client)
-local _ChestRequestOpen = game:GetService("ReplicatedStorage").Brainrot.ChestsV2.Server.RequestOpen
 
-MiscR2:Button({ Name="Open All Ready Chests", Callback=function()
-    local opened = 0
-    for id, info in pairs(_ChestsV2Client.Registry) do
-        if _ChestsV2Client.ChestIsPassedCooldown(id) then
-            local ok, res = pcall(function() return _ChestRequestOpen:InvokeServer(id) end)
-            if ok and res and res.Prizes then
-                opened = opened + 1
-                if res.TimeOpened then
-                    _ChestsV2Client.SetUnlockTime(id, res.TimeOpened)
-                end
-            end
-            task.wait(0.3)
-        end
-    end
-    notify("Opened " .. opened .. " chests", 3)
-end })
-
-MiscR2:Button({ Name="Open World 1 Chests", Callback=function()
-    local opened = 0
-    for id, info in pairs(_ChestsV2Client.Registry) do
-        if info.World == 1 and _ChestsV2Client.ChestIsPassedCooldown(id) then
-            local ok, res = pcall(function() return _ChestRequestOpen:InvokeServer(id) end)
-            if ok and res and res.Prizes then
-                opened = opened + 1
-                if res.TimeOpened then _ChestsV2Client.SetUnlockTime(id, res.TimeOpened) end
-            end
-            task.wait(0.3)
-        end
-    end
-    notify("Opened " .. opened .. " W1 chests", 3)
-end })
-
-MiscR2:Button({ Name="Open World 2 Chests", Callback=function()
-    local opened = 0
-    for id, info in pairs(_ChestsV2Client.Registry) do
-        if info.World == 2 and _ChestsV2Client.ChestIsPassedCooldown(id) then
-            local ok, res = pcall(function() return _ChestRequestOpen:InvokeServer(id) end)
-            if ok and res and res.Prizes then
-                opened = opened + 1
-                if res.TimeOpened then _ChestsV2Client.SetUnlockTime(id, res.TimeOpened) end
-            end
-            task.wait(0.3)
-        end
-    end
-    notify("Opened " .. opened .. " W2 chests", 3)
-end })
-
-getgenv()._ZH_autoChests = false
-Tog.AutoChests = MiscR2:Toggle({ Name="Auto Farm Chests", Default=false,
-    Callback=function(p)
-        getgenv()._ZH_autoChests = p
-        if p then
-            task.spawn(function()
-                while getgenv()._ZH_autoChests do
-                    for id, info in pairs(_ChestsV2Client.Registry) do
-                        if not getgenv()._ZH_autoChests then break end
-                        if _ChestsV2Client.ChestIsPassedCooldown(id) then
-                            local ok, res = pcall(function() return _ChestRequestOpen:InvokeServer(id) end)
-                            if ok and res and res.TimeOpened then
-                                _ChestsV2Client.SetUnlockTime(id, res.TimeOpened)
-                            end
-                            task.wait(0.3)
-                        end
-                    end
-                    task.wait(30)
-                end
-            end)
-        end
-    end }, "AutoChests")
-
-local NavL = Tabs.Navigation:Section({Side="Left", Name="Locations", Image="map-pin"})
+local NavL = Tabs.Navigation:Section({Side="Left", Name="NPC Teleport", Image="map-pin"})
 local NavR = Tabs.Navigation:Section({Side="Right", Name="Zones", Image="compass"})
 
-local _navDests = {
-    ["Rot Center (Heal)"] = CFrame.new(-1530, 66, 1439),
-    ["Sell Shop"] = CFrame.new(-1495, 19, 1389),
-    ["Lucky Shop"] = CFrame.new(-1546, 20, 1332),
-    ["Player House"] = CFrame.new(-1499, 19, 1336),
-    ["Vending Machine"] = CFrame.new(-1514, 22, 1351),
-    ["Main Spawn"] = CFrame.new(-1529, 16, 1368),
+local _npcDests = {
+    ["W1 Rot Center"] = {cf=CFrame.new(-1530, 66, 1439), world=1},
+    ["W1 Sell Shop"] = {cf=CFrame.new(-1495, 19, 1389), world=1},
+    ["W1 Lucky Shop"] = {cf=CFrame.new(-1546, 20, 1332), world=1},
+    ["W1 Vending Machine"] = {cf=CFrame.new(-1514, 22, 1351), world=1},
+    ["W1 Player House"] = {cf=CFrame.new(-1499, 19, 1336), world=1},
+    ["W1 Spawn"] = {cf=CFrame.new(-1529, 16, 1368), world=1},
+    ["W2 Rot Center"] = {cf=CFrame.new(-1532, 59, 362), world=2},
+    ["W2 Sell Shop"] = {cf=CFrame.new(-1588, 19, 363), world=2},
+    ["W2 Lucky Shop"] = {cf=CFrame.new(-1634, 20, 299), world=2},
+    ["W2 Vending Machine"] = {cf=CFrame.new(-1539, 22, 311), world=2},
+    ["W2 Gym"] = {cf=CFrame.new(-1491, 16, 326), world=2},
+    ["W2 Exchange Machine"] = {cf=CFrame.new(-1572, 20, 309), world=2},
+    ["W2 Spawn"] = {cf=CFrame.new(-1555.9, 18.61, 328.96), world=2},
 }
-local _navOrder = {"Rot Center (Heal)", "Sell Shop", "Lucky Shop", "Player House", "Vending Machine", "Main Spawn"}
-local function _navTP(cf)
-    local hrp = getHRP()
-    if hrp then hrp.CFrame = cf; hrp.AssemblyLinearVelocity = Vector3.zero end
-end
-for _, name in ipairs(_navOrder) do
-    NavL:Button({ Name=name, Callback=function() _navTP(_navDests[name]); notify("TP'd to " .. name, 2) end })
-end
+local _npcNames = {}
+for name in pairs(_npcDests) do _npcNames[#_npcNames+1] = name end
+table.sort(_npcNames)
 
-for _, z in ipairs(_zoneNames) do
-    NavR:Button({ Name=z, Callback=function()
-        _navTP(_ZonePositions[z]); notify("TP'd to " .. z, 2)
-    end })
-end
-NavR:Button({ Name="Nearest Wild Rot", Callback=function()
-    local rp = _getNearestRot()
-    if rp then _navTP(CFrame.new(rp + Vector3.new(0,3,0))); notify("TP'd to nearest rot", 2)
-    else notify("No rots nearby", 2) end
+getgenv()._ZH_selectedNPC = _npcNames[1]
+Opt.NPCDrop = NavL:Dropdown({ Name="NPC / Location", Options=_npcNames, Default=1, Multi=false,
+    Callback=function(v) local sel = type(v)=="table" and next(v) or v; getgenv()._ZH_selectedNPC = sel end }, "NPCDrop")
+
+NavL:Button({ Name="Teleport", Callback=function()
+    local name = getgenv()._ZH_selectedNPC
+    local dest = _npcDests[name]
+    if not dest then notify("Select a location",2); return end
+    if _WorldsClient.CurrentWorld ~= dest.world then
+        _ensureWorld(dest.world)
+        local hrp = getHRP()
+        if hrp and _WorldSpawn[dest.world] then
+            hrp.CFrame = _WorldSpawn[dest.world]
+            hrp.AssemblyLinearVelocity = Vector3.zero
+            task.wait(1.5)
+        end
+    end
+    local hrp = getHRP()
+    if hrp then hrp.CFrame = dest.cf; hrp.AssemblyLinearVelocity = Vector3.zero end
+    notify("TP'd to " .. name, 2)
 end })
 
-onUnload(function() getgenv()._ZH_autoFarm = false; getgenv()._ZH_autoHeal = false; getgenv()._ZH_autoCatch = false; getgenv()._ZH_autoSell = false; getgenv()._ZH_autoChests = false end)
+NavL:Button({ Name="Nearest Wild Rot", Callback=function()
+    local rp = _getNearestRot()
+    if rp then local hrp = getHRP(); if hrp then hrp.CFrame = CFrame.new(rp + Vector3.new(0,3,0)); hrp.AssemblyLinearVelocity = Vector3.zero end; notify("TP'd to nearest rot", 2)
+    else notify("No rots nearby", 2) end
+end })
+for _, z in ipairs(_zoneNames) do
+    NavR:Button({ Name=z, Callback=function()
+        local needWorld = _ZoneWorld[z] or 1
+        _ensureWorld(needWorld)
+        local hrp = getHRP()
+        if hrp then hrp.CFrame = _ZonePositions[z]; hrp.AssemblyLinearVelocity = Vector3.zero end
+        notify("TP'd to " .. z, 2)
+    end })
+end
+
+local WorldL = Tabs.Game:Section({Side="Right", Name="Rarity ESP", Image="eye"})
+local WorldR = Tabs.World:Section({Side="Left", Name="World Travel", Image="mountain"})
+
+local _rarityColorMap = {}
+for _, r in ipairs(_Core.Rarities.Array) do
+    local parts = {}
+    for n in tostring(r.Color):gmatch("[%d%.]+") do parts[#parts+1] = tonumber(n) end
+    _rarityColorMap[r.Name] = Color3.new(parts[1] or 0.8, parts[2] or 0.8, parts[3] or 0.8)
+end
+local function _rarityColor(name)
+    return _rarityColorMap[name] or Color3.new(0.8, 0.8, 0.8)
+end
+
+local _RARE_TIERS = { Epic = true, Insane = true }
+
+getgenv()._ZH_esp = false
+getgenv()._ZH_espRainbowRare = true
+getgenv()._ZH_espMinRarity = "Common"
+local _rarityRank = { Common=1, Uncommon=2, Rare=3, Epic=4, Insane=5 }
+local _espDrawings = {}
+
+local function _clearESP()
+    for _, d in pairs(_espDrawings) do pcall(function() d.text:Remove() end) end
+    _espDrawings = {}
+end
+
+local function _espLoop()
+    local RunService = game:GetService("RunService")
+    local cam = workspace.CurrentCamera
+    local conn
+    conn = RunService.RenderStepped:Connect(function()
+        if not getgenv()._ZH_esp then
+            _clearESP()
+            conn:Disconnect()
+            return
+        end
+        local rotObjs = workspace:FindFirstChild("ROT OBJECTS")
+        if not rotObjs then return end
+
+        local levelMap = {}
+        for _, c in pairs(_RotChiller.AllContainers) do
+            if type(c) == "table" and c.Rots then
+                for uid, w in pairs(c.Rots) do
+                    if type(w) == "table" and w.RotInstance then
+                        levelMap[uid] = { name = w.Species, level = w.RotInstance.Level }
+                    end
+                end
+            end
+        end
+
+        local seen = {}
+        local minRank = _rarityRank[getgenv()._ZH_espMinRarity] or 1
+        local t = tick()
+        for _, child in ipairs(rotObjs:GetChildren()) do
+            local info = levelMap[child.Name]
+            if info then
+                local sp = _Core.Species[info.name]
+                local rarity = sp and sp.Rarity and sp.Rarity.Name or "Common"
+                if (_rarityRank[rarity] or 1) >= minRank then
+                    local pp = child.PrimaryPart or child:FindFirstChildWhichIsA("BasePart")
+                    if pp and pp.Parent then
+                        local ok, pos = pcall(function() return pp.Position end)
+                        if ok and pos then
+                            local sp2, onScreen = cam:WorldToViewportPoint(pos + Vector3.new(0, 3, 0))
+                            if onScreen then
+                                seen[child] = true
+                                local d = _espDrawings[child]
+                                if not d then
+                                    local txt = Drawing.new("Text")
+                                    txt.Size = 18
+                                    txt.Center = true
+                                    txt.Outline = true
+                                    d = { text = txt }
+                                    _espDrawings[child] = d
+                                end
+                                local col
+                                if getgenv()._ZH_espRainbowRare and _RARE_TIERS[rarity] then
+                                    col = Color3.fromHSV((t * 0.5) % 1, 1, 1)
+                                else
+                                    col = _rarityColor(rarity)
+                                end
+                                d.text.Position = Vector2.new(sp2.X, sp2.Y)
+                                d.text.Text = string.format("%s [%s] Lv%d", info.name, rarity, info.level)
+                                d.text.Color = col
+                                d.text.Visible = true
+                            end
+                        end
+                    end
+                end
+            end
+        end
+        for child, d in pairs(_espDrawings) do
+            if not seen[child] then
+                pcall(function() d.text:Remove() end)
+                _espDrawings[child] = nil
+            end
+        end
+    end)
+end
+
+Tog.ESP = WorldL:Toggle({ Name="Rarity ESP", Default=false,
+    Callback=function(p) getgenv()._ZH_esp = p; if p then _espLoop() else _clearESP() end end }, "ESP")
+
+Tog.ESPRainbow = WorldL:Toggle({ Name="Rainbow on Epic+", Default=true,
+    Callback=function(p) getgenv()._ZH_espRainbowRare = p end }, "ESPRainbow")
+
+Opt.ESPMinRarity = WorldL:Dropdown({ Name="Min Rarity", Options={"Common","Uncommon","Rare","Epic","Insane"}, Default=1, Multi=false,
+    Callback=function(v) local sel = type(v) == "table" and next(v) or v; getgenv()._ZH_espMinRarity = sel end }, "ESPMinRarity")
+
+WorldR:Button({ Name="Unlock World 2", Callback=function()
+    pcall(function() _WorldsClient.SetWorldUnlocked(2, true) end)
+    notify("World 2 unlocked", 2)
+end })
+
+onUnload(function() getgenv()._ZH_autoFarm = false; getgenv()._ZH_autoHeal = false; getgenv()._ZH_autoCatch = false; getgenv()._ZH_autoSell = false; getgenv()._ZH_autoClick = false; getgenv()._ZH_autoBuy = false; getgenv()._ZH_esp = false; _clearESP() end)
 
 Opt.Coordinates = CharL:Input({ Name="Coordinates", Default="", Placeholder="X, Y, Z", Callback=function() end }, "Coordinates")
 CharL:Button({ Name="Tween To", Callback=function() notify("Tween feature",2) end })
